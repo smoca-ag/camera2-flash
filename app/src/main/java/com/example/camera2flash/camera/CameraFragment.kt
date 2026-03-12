@@ -87,7 +87,9 @@ class CameraFragment(
     }
 
     /**
-     * Camera2 requires a [HandlerThread]
+     * Camera2 requires a [HandlerThread] or an [Executor] to perform operations. As they can take
+     * long it is important to not perform this on the main thread. For this example app we choose
+     * to go with Handlers because all other requests require a Handler and not an executor.
      */
     private fun startBackgroundThread() {
         mBackgroundThread = HandlerThread("CameraBackground").also { it.start() }
@@ -105,6 +107,15 @@ class CameraFragment(
         mBackgroundHandler = null
     }
 
+    /**
+     * Selects the most appropriate [Size] for the camera preview.
+     *
+     * This method attempts to find a 1080p (1920x1080) resolution first. If not available,
+     * it falls back to the largest supported size provided by the [cameraSelector].
+     * If no sizes are returned, it defaults to 1920x1080.
+     *
+     * @return The selected [Size] for the camera preview.
+     */
     private fun choosePreviewSize(): Size {
         val sizes = cameraSelector.getSupportedPreviewSizes()
         return sizes.firstOrNull { it.width == 1920 && it.height == 1080 }
@@ -112,6 +123,20 @@ class CameraFragment(
             ?: Size(1920, 1080)
     }
 
+    /**
+     * Initializes and opens the back-facing camera device.
+     *
+     * This function performs several setup steps:
+     * 1. Verifies that the [TextureView] is ready; if not, it defers the call until the surface is available.
+     * 2. Identifies and configures the back camera ID.
+     * 3. Starts a background [HandlerThread] for camera operations to avoid blocking the main thread.
+     * 4. Determines the optimal preview size and initializes an [ImageReader] to handle still image captures.
+     * 5. Sets up the [mPreviewSurface] and requests the [android.hardware.camera2.CameraManager] to open the device.
+     *
+     * When the camera is successfully opened, the [cameraStateCallback] is triggered to start the preview.
+     *
+     * @throws IllegalStateException if the [mTextureView] is null or if no back-facing camera is found.
+     */
     @SuppressLint("MissingPermission")
     fun openCamera() {
         val textureView = mTextureView ?: throw IllegalStateException("No texture view created")
@@ -155,6 +180,13 @@ class CameraFragment(
         )
     }
 
+    /**
+     * [CameraDevice.StateCallback] is called when the [CameraDevice] changes its state.
+     *
+     * It handles the lifecycle of the camera device, including successfully opening the camera
+     * (triggering the preview start), handling disconnection, and managing error states by
+     * closing the device and cleaning up references.
+     */
     private val cameraStateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
             mCameraDevice = camera
@@ -231,6 +263,20 @@ class CameraFragment(
         camera.createCaptureSession(sessionConfig)
     }
 
+    /**
+     * Initiates the process of capturing a still image with a forced flash sequence.
+     *
+     * This method performs the following steps:
+     * 1. Updates the repeating preview request to enable [CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH].
+     * 2. Launches a coroutine on [Dispatchers.IO] to handle the capture sequence asynchronously.
+     * 3. Waits for the Auto-Exposure (AE) mode to update and executes a precapture sequence
+     *    (AE/AWB convergence) to ensure the flash and exposure are ready.
+     * 4. Dispatches a single [CameraDevice.TEMPLATE_STILL_CAPTURE] request to the [ImageReader] surface.
+     * 5. Resets the repeating preview request to the standard AE mode once the capture is complete.
+     *
+     * The results of the capture are handled by the [mImageReader]'s listener, which saves the
+     * image to the cache directory and triggers [onPictureTaken].
+     */
     fun takePicture() {
         val camera = mCameraDevice ?: return
         val session = mCaptureSession ?: return
@@ -245,9 +291,12 @@ class CameraFragment(
 
         /*
          The following is the core of the flash procedure. It is important that it is performed asynchronously
-         using a different coroutine scope to allow the main thread to update the preview.
+         using a different coroutine scope to allow the main thread to continue updating the preview.
          */
         CoroutineScope(Dispatchers.IO).launch {
+            /*
+             We wait to continue until the flash mode has been switched
+             */
             repeatingCaptureCallback.awaitAeModeUpdate(CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
             runPrecaptureSequence()
 
@@ -271,6 +320,18 @@ class CameraFragment(
         }
     }
 
+    /**
+     * Executes the pre-capture sequence to prepare the camera for a still image capture with flash.
+     *
+     * This method triggers the Auto-Exposure (AE) precapture metering sequence by sending a
+     * specific [CaptureRequest] with [CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START].
+     * It then suspends execution until two conditions are met:
+     * 1. The precapture trigger request itself is completed.
+     * 2. The AE and Auto-White Balance (AWB) algorithms have converged to stable states,
+     *    ensuring optimal exposure and color balance for the subsequent high-quality capture.
+     *
+     * @throws IllegalArgumentException if [mCaptureSession] or [mPreviewSurface] is null.
+     */
     private suspend fun runPrecaptureSequence() {
         val session = mCaptureSession ?: throw IllegalArgumentException("No capture session set")
         val previewSurface = mPreviewSurface ?: throw IllegalArgumentException("No preview surface set")
@@ -284,6 +345,11 @@ class CameraFragment(
             set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
         }
 
+        /**
+         * The [CompletableDeferred] is used to wait for the camera to acknowledge that the
+         * AE precapture trigger request has been captured/processed. This does NOT mean the
+         * precapture sequence is complete - it just confirms the trigger was successfully sent.
+         */
         val precaptureDeferred = CompletableDeferred<Unit>()
         session.capture(captureRequest.build(), object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(
@@ -295,11 +361,14 @@ class CameraFragment(
             }
         }, mBackgroundHandler)
 
-        Log.d("CameraFragment", "Awaiting precapture sequence")
         precaptureDeferred.await()
-        Log.d("CameraFragment", "Awaiting AE AWB convergence")
+
+        /**
+         * Now that the precapture trigger has been sent and acknowledged, we wait for the actual
+         * precapture sequence to complete. This means waiting for AE (auto-exposure) and AWB
+         * (auto white balance) to converge to stable values before taking the picture.
+         */
         repeatingCaptureCallback.awaitAeAwbConvergence()
-        Log.d("CameraFragment", "Finished precapture sequence")
     }
 
     /**
@@ -355,6 +424,18 @@ class CameraFragment(
 
     }
 
+    /**
+     * A [CameraCaptureSession.CaptureCallback] used to monitor the state of the repeating
+     * preview request.
+     *
+     * This callback tracks [CaptureResult] metadata to provide synchronization primitives
+     * for asynchronous camera operations. It allows the application to:
+     * 1. Suspend execution until a specific Auto-Exposure (AE) mode has been applied by
+     *    the camera hardware ([awaitAeModeUpdate]).
+     * 2. Suspend execution until both AE and Auto-White Balance (AWB) have reached a
+     *    converged state ([awaitAeAwbConvergence]), which is critical for consistent
+     *    image quality before a still capture.
+     */
     private val repeatingCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
         private var targetAeMode: Int? = null
         private var aeModeUpdateDeferred: CompletableDeferred<Unit>? = null
