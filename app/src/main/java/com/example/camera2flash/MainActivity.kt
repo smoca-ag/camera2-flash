@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val cameraSelector = CameraSelector(this)
-        cameraFragment = CameraFragment(this, cameraSelector)
+        cameraFragment = CameraFragment(this, this, cameraSelector)
 
         cameraFragment.onPictureTaken = { file ->
             runOnUiThread {

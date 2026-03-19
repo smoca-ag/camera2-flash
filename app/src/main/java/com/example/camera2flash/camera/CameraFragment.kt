@@ -14,7 +14,6 @@ import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.display.DisplayManager
 import android.media.ImageReader
-import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -23,17 +22,17 @@ import android.view.Display
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
-import androidx.annotation.RequiresApi
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executor
 
 class CameraFragment(
+    val lifecycle: LifecycleOwner,
     val context: Context,
     val cameraSelector: CameraSelector
 ) {
@@ -293,7 +292,7 @@ class CameraFragment(
          The following is the core of the flash procedure. It is important that it is performed asynchronously
          using a different coroutine scope to allow the main thread to continue updating the preview.
          */
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycle.lifecycleScope.launch(Dispatchers.IO) {
             /*
              We wait to continue until the flash mode has been switched
              */
