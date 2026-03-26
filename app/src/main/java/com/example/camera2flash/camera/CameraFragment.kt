@@ -280,6 +280,7 @@ class CameraFragment(
         val camera = mCameraDevice ?: return
         val session = mCaptureSession ?: return
         val builder = mPreviewRequestBuilder ?: return
+        val imageReader = mImageReader ?: return
 
         /*
         To avoid having to have the flash mode enabled all the time during preview, we can store a reference
@@ -300,7 +301,7 @@ class CameraFragment(
             runPrecaptureSequence()
 
             val captureRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                addTarget(mImageReader!!.surface)
+                addTarget(imageReader.surface)
                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
                 set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
             }.build()
